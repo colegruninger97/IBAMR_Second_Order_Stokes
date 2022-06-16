@@ -24,9 +24,12 @@
 #include <StandardTagAndInitialize.h>
 
 // Headers for application-specific algorithm/data structure objects
+#include "ibamr/CFINSForcing.h"
+#include <ibamr/AdvDiffSemiImplicitHierarchyIntegrator.h>
 #include <ibamr/IBExplicitHierarchyIntegrator.h>
 #include <ibamr/IBMethod.h>
 #include <ibamr/IBStandardForceGen.h>
+#include <ibamr/IBTargetPointForceSpec.h>
 #include <ibamr/IBStandardInitializer.h>
 #include <ibamr/INSCollocatedHierarchyIntegrator.h>
 #include <ibamr/INSStaggeredHierarchyIntegrator.h>
@@ -44,11 +47,14 @@
 #include <ibamr/app_namespaces.h>
 
 // Function prototypes
-void postprocess_data(Pointer<PatchHierarchy<NDIM> > patch_hierarchy,
-                      LDataManager* l_data_manager,
-                      const double loop_time,
-                      ostream& C_D_stream,
-                      ostream& C_L_stream);
+void
+output_data(Pointer<PatchHierarchy<NDIM> > patch_hierarchy,
+            Pointer<INSHierarchyIntegrator> ins_integrator,
+            Pointer<AdvDiffSemiImplicitHierarchyIntegrator> adv_diff_integrator,
+            Pointer<CFINSForcing> polymericStressForcing,
+            const int iteration_num,
+            const double loop_time,
+            const string& data_dump_dirname);
 
 /*******************************************************************************
  * For each run, the input filename and restart information (if needed) must   *
@@ -84,24 +90,32 @@ main(int argc, char* argv[])
         const int restart_dump_interval = app_initializer->getRestartDumpInterval();
         const string restart_dump_dirname = app_initializer->getRestartDumpDirectory();
 
+        const bool dump_postproc_data = app_initializer->dumpPostProcessingData();
+        const int postproc_data_dump_interval = app_initializer->getPostProcessingDataDumpInterval();
+        const string postproc_data_dump_dirname = app_initializer->getPostProcessingDataDumpDirectory();
+        if (dump_postproc_data && (postproc_data_dump_interval > 0) && !postproc_data_dump_dirname.empty())
+        {
+            Utilities::recursiveMkdir(postproc_data_dump_dirname);
+        }
+
         const bool dump_timer_data = app_initializer->dumpTimerData();
         const int timer_dump_interval = app_initializer->getTimerDumpInterval();
 
         // Create major algorithm and data objects that comprise the
         // application.  These objects are configured from the input database
         // and, if this is a restarted run, from the restart database.
-        Pointer<INSHierarchyIntegrator> navier_stokes_integrator;
+        Pointer<INSHierarchyIntegrator> complex_fluid_integrator;
         const string solver_type =
             app_initializer->getComponentDatabase("Main")->getStringWithDefault("solver_type", "STAGGERED");
         if (solver_type == "STAGGERED")
         {
-            navier_stokes_integrator = new INSStaggeredHierarchyIntegrator(
+            complex_fluid_integrator = new INSStaggeredHierarchyIntegrator(
                 "INSStaggeredHierarchyIntegrator",
                 app_initializer->getComponentDatabase("INSStaggeredHierarchyIntegrator"));
         }
         else if (solver_type == "COLLOCATED")
         {
-            navier_stokes_integrator = new INSCollocatedHierarchyIntegrator(
+            complex_fluid_integrator = new INSCollocatedHierarchyIntegrator(
                 "INSCollocatedHierarchyIntegrator",
                 app_initializer->getComponentDatabase("INSCollocatedHierarchyIntegrator"));
         }
@@ -110,28 +124,72 @@ main(int argc, char* argv[])
             TBOX_ERROR("Unsupported solver type: " << solver_type << "\n"
                                                    << "Valid options are: COLLOCATED, STAGGERED");
         }
+        Pointer<CartesianGridGeometry<NDIM> > grid_geometry = new CartesianGridGeometry<NDIM>(
+            "CartesianGeometry", app_initializer->getComponentDatabase("CartesianGeometry"));
+        Pointer<AdvDiffSemiImplicitHierarchyIntegrator> adv_diff_integrator;
+        adv_diff_integrator = new AdvDiffSemiImplicitHierarchyIntegrator(
+            "AdvDiffSemiImplicitHierarchyIntegrator",
+            app_initializer->getComponentDatabase("AdvDiffSemiImplicitHierarchyIntegrator"));
+        Pointer<PatchHierarchy<NDIM> > patch_hierarchy = new PatchHierarchy<NDIM>("PatchHierarchy", grid_geometry);
+        Pointer<BergerRigoutsos<NDIM> > box_generator = new BergerRigoutsos<NDIM>();
+        Pointer<LoadBalancer<NDIM> > load_balancer =
+            new LoadBalancer<NDIM>("LoadBalancer", app_initializer->getComponentDatabase("LoadBalancer"));
+        complex_fluid_integrator->registerAdvDiffHierarchyIntegrator(adv_diff_integrator);
+
+        // Create Eulerian initial condition specification objects.
+        Pointer<CartGridFunction> u_init = new muParserCartGridFunction(
+            "u_init", app_initializer->getComponentDatabase("VelocityInitialConditions"), grid_geometry);
+        complex_fluid_integrator->registerVelocityInitialConditions(u_init);
+        Pointer<CartGridFunction> p_init = new muParserCartGridFunction(
+            "p_init", app_initializer->getComponentDatabase("PressureInitialConditions"), grid_geometry);
+        complex_fluid_integrator->registerPressureInitialConditions(p_init);
+
+        // Set up visualization plot file writers.
+        Pointer<VisItDataWriter<NDIM> > visit_data_writer = app_initializer->getVisItDataWriter();
+
+        // Create body force function specification objects (when necessary).
+        Pointer<CFINSForcing> polymericStressForcing;
+        bool using_exact_u = input_db->getBool("USING_EXACT_U");
+        if (input_db->keyExists("ComplexFluid"))
+        {
+            if (!using_exact_u)
+            {
+                polymericStressForcing = new CFINSForcing("PolymericStressForcing",
+                                                          app_initializer->getComponentDatabase("ComplexFluid"),
+                                                          complex_fluid_integrator,
+                                                          grid_geometry,
+                                                          adv_diff_integrator,
+                                                          visit_data_writer);
+                //complex_fluid_integrator->registerBodyForceFunction(polymericStressForcing);
+            }
+            else
+            {
+                polymericStressForcing = new CFINSForcing("PolymericStressForcing",
+                                                          app_initializer->getComponentDatabase("ComplexFluid"),
+                                                          u_init,
+                                                          grid_geometry,
+                                                          adv_diff_integrator,
+                                                          visit_data_writer);
+            }
+        }
+
         Pointer<IBMethod> ib_method_ops = new IBMethod("IBMethod", app_initializer->getComponentDatabase("IBMethod"));
         Pointer<IBHierarchyIntegrator> time_integrator =
             new IBExplicitHierarchyIntegrator("IBHierarchyIntegrator",
                                               app_initializer->getComponentDatabase("IBHierarchyIntegrator"),
                                               ib_method_ops,
-                                              navier_stokes_integrator);
-        Pointer<CartesianGridGeometry<NDIM> > grid_geometry = new CartesianGridGeometry<NDIM>(
-            "CartesianGeometry", app_initializer->getComponentDatabase("CartesianGeometry"));
-        Pointer<PatchHierarchy<NDIM> > patch_hierarchy = new PatchHierarchy<NDIM>("PatchHierarchy", grid_geometry);
+                                              complex_fluid_integrator);
         Pointer<StandardTagAndInitialize<NDIM> > error_detector =
             new StandardTagAndInitialize<NDIM>("StandardTagAndInitialize",
                                                time_integrator,
                                                app_initializer->getComponentDatabase("StandardTagAndInitialize"));
-        Pointer<BergerRigoutsos<NDIM> > box_generator = new BergerRigoutsos<NDIM>();
-        Pointer<LoadBalancer<NDIM> > load_balancer =
-            new LoadBalancer<NDIM>("LoadBalancer", app_initializer->getComponentDatabase("LoadBalancer"));
         Pointer<GriddingAlgorithm<NDIM> > gridding_algorithm =
             new GriddingAlgorithm<NDIM>("GriddingAlgorithm",
-                                        app_initializer->getComponentDatabase("GriddingAlgorithm"),
-                                        error_detector,
-                                        box_generator,
-                                        load_balancer);
+                                            app_initializer->getComponentDatabase("GriddingAlgorithm"),
+                                            error_detector,
+                                            box_generator,
+                                            load_balancer);
+        complex_fluid_integrator->initializePatchHierarchy(patch_hierarchy, gridding_algorithm);
 
         // Configure the IB solver.
         Pointer<IBStandardInitializer> ib_initializer = new IBStandardInitializer(
@@ -141,20 +199,14 @@ main(int argc, char* argv[])
         ib_method_ops->registerIBLagrangianForceFunction(ib_force_fcn);
         LDataManager* l_data_manager = ib_method_ops->getLDataManager();
 
-        // Create Eulerian initial condition specification objects.
-        if (input_db->keyExists("VelocityInitialConditions"))
-        {
-            Pointer<CartGridFunction> u_init = new muParserCartGridFunction(
-                "u_init", app_initializer->getComponentDatabase("VelocityInitialConditions"), grid_geometry);
-            navier_stokes_integrator->registerVelocityInitialConditions(u_init);
-        }
+        Pointer<LSiloDataWriter> silo_data_writer = app_initializer->getLSiloDataWriter();
+                if (uses_visit)
+                {
+                    ib_initializer->registerLSiloDataWriter(silo_data_writer);
+                    ib_method_ops->registerLSiloDataWriter(silo_data_writer);
+                    time_integrator->registerVisItDataWriter(visit_data_writer);
+                }
 
-        if (input_db->keyExists("PressureInitialConditions"))
-        {
-            Pointer<CartGridFunction> p_init = new muParserCartGridFunction(
-                "p_init", app_initializer->getComponentDatabase("PressureInitialConditions"), grid_geometry);
-            navier_stokes_integrator->registerPressureInitialConditions(p_init);
-        }
 
         // Create Eulerian boundary condition specification objects (when necessary).
         vector<RobinBcCoefStrategy<NDIM>*> u_bc_coefs(NDIM, static_cast<RobinBcCoefStrategy<NDIM>*>(NULL));
@@ -168,16 +220,18 @@ main(int argc, char* argv[])
                 u_bc_coefs[d] = new muParserRobinBcCoefs(
                     bc_coefs_name, app_initializer->getComponentDatabase(bc_coefs_db_name), grid_geometry);
             }
-            navier_stokes_integrator->registerPhysicalBoundaryConditions(u_bc_coefs);
-            if (solver_type == "STAGGERED" && input_db->keyExists("BoundaryStabilization"))
-            {
-                time_integrator->registerBodyForceFunction(new StaggeredStokesOpenBoundaryStabilizer(
-                    "BoundaryStabilization",
-                    app_initializer->getComponentDatabase("BoundaryStabilization"),
-                    navier_stokes_integrator,
-                    grid_geometry));
-            }
+            complex_fluid_integrator->registerPhysicalBoundaryConditions(u_bc_coefs);
         }
+
+        if(input_db->keyExists("ComplexFluid"))
+        {
+            time_integrator->registerBodyForceFunction(polymericStressForcing);
+        }
+
+        Pointer<muParserCartGridFunction> s_init = new muParserCartGridFunction(
+            "S_exact",
+            app_initializer->getComponentDatabase("ComplexFluid")->getDatabase("InitialConditions"),
+            grid_geometry);
 
         // Create Eulerian body force function specification objects.
         if (input_db->keyExists("ForcingFunction"))
@@ -189,16 +243,6 @@ main(int argc, char* argv[])
             Pointer<CartGridFunction> f_fcn = new muParserCartGridFunction(
                 "f_fcn", app_initializer->getComponentDatabase("ForcingFunction"), grid_geometry);
             time_integrator->registerBodyForceFunction(f_fcn);
-        }
-
-        // Set up visualization plot file writers.
-        Pointer<VisItDataWriter<NDIM> > visit_data_writer = app_initializer->getVisItDataWriter();
-        Pointer<LSiloDataWriter> silo_data_writer = app_initializer->getLSiloDataWriter();
-        if (uses_visit)
-        {
-            ib_initializer->registerLSiloDataWriter(silo_data_writer);
-            ib_method_ops->registerLSiloDataWriter(silo_data_writer);
-            time_integrator->registerVisItDataWriter(visit_data_writer);
         }
 
         // Initialize hierarchy configuration and data on all patches.
@@ -230,14 +274,6 @@ main(int argc, char* argv[])
             time_integrator->setupPlotData();
             visit_data_writer->writePlotData(patch_hierarchy, iteration_num, loop_time);
             silo_data_writer->writePlotData(iteration_num, loop_time);
-        }
-
-        // Streams to write-out data.
-        std::ofstream C_D_stream, C_L_stream;
-        if (IBTK_MPI::getRank() == 0)
-        {
-            C_D_stream.open("C_D.curve", ios_base::out | ios_base::trunc);
-            C_L_stream.open("C_L.curve", ios_base::out | ios_base::trunc);
         }
 
         // Main time step loop.
@@ -273,7 +309,6 @@ main(int argc, char* argv[])
                 pout << "\nWriting visualization files...\n\n";
                 time_integrator->setupPlotData();
                 visit_data_writer->writePlotData(patch_hierarchy, iteration_num, loop_time);
-                silo_data_writer->writePlotData(iteration_num, loop_time);
             }
             if (dump_restart_data && (iteration_num % restart_dump_interval == 0 || last_step))
             {
@@ -285,14 +320,11 @@ main(int argc, char* argv[])
                 pout << "\nWriting timer data...\n\n";
                 TimerManager::getManager()->print(plog);
             }
-            postprocess_data(patch_hierarchy, l_data_manager, loop_time, C_D_stream, C_L_stream);
-        }
+            if (dump_postproc_data && (iteration_num % postproc_data_dump_interval == 0 || last_step))
+            {
+                output_data(patch_hierarchy, complex_fluid_integrator, adv_diff_integrator, polymericStressForcing, iteration_num, loop_time, postproc_data_dump_dirname);
+            }
 
-        // Close the logging streams.
-        if (IBTK_MPI::getRank() == 0)
-        {
-            C_D_stream.close();
-            C_L_stream.close();
         }
 
         // Cleanup Eulerian boundary condition specification objects (when
@@ -303,34 +335,38 @@ main(int argc, char* argv[])
 } // main
 
 void
-postprocess_data(Pointer<PatchHierarchy<NDIM> > patch_hierarchy,
-                 LDataManager* l_data_manager,
-                 const double loop_time,
-                 ostream& C_D_stream,
-                 ostream& C_L_stream)
+output_data(Pointer<PatchHierarchy<NDIM> > patch_hierarchy,
+            Pointer<INSHierarchyIntegrator> ins_integrator,
+            Pointer<AdvDiffSemiImplicitHierarchyIntegrator> adv_diff_integrator,
+            Pointer<CFINSForcing> polymericStressForcing,
+            const int iteration_num,
+            const double loop_time,
+            const string& data_dump_dirname)
 {
-    // Compute lift and drag forces.
-    const int finest_hier_level = patch_hierarchy->getFinestLevelNumber();
-    Pointer<LData> F_data = l_data_manager->getLData("F", finest_hier_level);
-    const boost::multi_array_ref<double, 2>& F_arr = *F_data->getLocalFormVecArray();
-    double F[NDIM];
-    for (unsigned int d = 0; d < NDIM; ++d) F[d] = 0.0;
-    for (unsigned int k = 0; k < F_data->getLocalNodeCount(); ++k)
+    pout << "Outputting data at time: " << loop_time << "\n And iteration num : " << iteration_num << "\n";
+    plog << "writing hierarchy data at iteration " << iteration_num << " to disk" << endl;
+    plog << "simulation time is " << loop_time << endl;
+    string file_name = data_dump_dirname + "/" + "hier_data.";
+    char temp_buf[128];
+    sprintf(temp_buf, "%05d.samrai.%05d", iteration_num, IBTK_MPI::getRank());
+    file_name += temp_buf;
+    Pointer<HDFDatabase> hier_db = new HDFDatabase("hier_db");
+    hier_db->create(file_name);
+    VariableDatabase<NDIM>* var_db = VariableDatabase<NDIM>::getDatabase();
+    ComponentSelector hier_data;
+    if (polymericStressForcing)
     {
-        for (unsigned int d = 0; d < NDIM; ++d)
-        {
-            F[d] += F_arr[k][d];
-        }
+        hier_data.setFlag(var_db->mapVariableAndContextToIndex(polymericStressForcing->getVariable(),
+                                                               adv_diff_integrator->getCurrentContext()));
+        pout << "current ctx " << adv_diff_integrator->getCurrentContext()->getName() << "\n";
     }
-    IBTK_MPI::sumReduction(F, NDIM);
-    if (IBTK_MPI::getRank() == 0)
-    {
-        C_D_stream.precision(12);
-        C_D_stream.setf(ios::fixed, ios::floatfield);
-        C_D_stream << loop_time << " " << -F[0] << endl;
-        C_L_stream.precision(12);
-        C_L_stream.setf(ios::fixed, ios::floatfield);
-        C_L_stream << loop_time << " " << -F[1] << endl;
-    }
+    hier_data.setFlag(var_db->mapVariableAndContextToIndex(ins_integrator->getVelocityVariable(),
+                                                           ins_integrator->getCurrentContext()));
+    hier_data.setFlag(var_db->mapVariableAndContextToIndex(ins_integrator->getPressureVariable(),
+                                                           ins_integrator->getCurrentContext()));
+    patch_hierarchy->putToDatabase(hier_db->putDatabase("PatchHierarchy"), hier_data);
+    hier_db->putDouble("loop_time", loop_time);
+    hier_db->putInteger("iteration_num", iteration_num);
+    hier_db->close();
     return;
-} // postprocess_data
+}; // output_data

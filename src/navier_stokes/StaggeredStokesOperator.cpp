@@ -203,7 +203,8 @@ StaggeredStokesOperator::apply(SAMRAIVectorReal<NDIM, double>& x, SAMRAIVectorRe
                                                              BDRY_EXTRAP_TYPE,
                                                              CONSISTENT_TYPE_2_BDRY,
                                                              d_U_bc_coefs,
-                                                             d_U_fill_pattern);
+                                                             d_U_fill_pattern,
+                                                             "QUADRATIC");
     transaction_comps[1] = InterpolationTransactionComponent(P_idx,
                                                              DATA_REFINE_TYPE,
                                                              USE_CF_INTERPOLATION,
@@ -211,7 +212,8 @@ StaggeredStokesOperator::apply(SAMRAIVectorReal<NDIM, double>& x, SAMRAIVectorRe
                                                              BDRY_EXTRAP_TYPE,
                                                              CONSISTENT_TYPE_2_BDRY,
                                                              d_P_bc_coef,
-                                                             d_P_fill_pattern);
+                                                             d_P_fill_pattern,
+                                                             "QUADRATIC");
     d_hier_bdry_fill->resetTransactionComponents(transaction_comps);
     d_hier_bdry_fill->setHomogeneousBc(d_homogeneous_bc);
     StaggeredStokesPhysicalBoundaryHelper::setupBcCoefObjects(
@@ -284,7 +286,8 @@ StaggeredStokesOperator::initializeOperatorState(const SAMRAIVectorReal<NDIM, do
                                                                BDRY_EXTRAP_TYPE,
                                                                CONSISTENT_TYPE_2_BDRY,
                                                                d_U_bc_coefs,
-                                                               d_U_fill_pattern);
+                                                               d_U_fill_pattern,
+                                                               "QUADRATIC");
     d_transaction_comps[1] = InterpolationTransactionComponent(in.getComponentDescriptorIndex(1),
                                                                DATA_REFINE_TYPE,
                                                                USE_CF_INTERPOLATION,
@@ -292,7 +295,8 @@ StaggeredStokesOperator::initializeOperatorState(const SAMRAIVectorReal<NDIM, do
                                                                BDRY_EXTRAP_TYPE,
                                                                CONSISTENT_TYPE_2_BDRY,
                                                                d_P_bc_coef,
-                                                               d_P_fill_pattern);
+                                                               d_P_fill_pattern,
+                                                               "QUADRATIC");
 
     // Initialize the interpolation operators.
     d_hier_bdry_fill = new HierarchyGhostCellInterpolation();

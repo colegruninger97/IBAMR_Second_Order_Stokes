@@ -2205,7 +2205,9 @@ INSStaggeredHierarchyIntegrator::resetHierarchyConfigurationSpecialized(
                                                      DATA_COARSEN_TYPE,
                                                      d_bdry_extrap_type, // TODO: update variable name
                                                      CONSISTENT_TYPE_2_BDRY,
-                                                     d_U_bc_coefs);
+                                                     d_U_bc_coefs,
+                                                     nullptr,
+                                                     "QUADRATIC");
     d_U_bdry_bc_fill_op = new HierarchyGhostCellInterpolation();
     d_U_bdry_bc_fill_op->initializeOperatorState(U_bc_component, d_hierarchy);
 
@@ -2215,7 +2217,9 @@ INSStaggeredHierarchyIntegrator::resetHierarchyConfigurationSpecialized(
                                                      DATA_COARSEN_TYPE,
                                                      d_bdry_extrap_type, // TODO: update variable name
                                                      CONSISTENT_TYPE_2_BDRY,
-                                                     d_P_bc_coef);
+                                                     d_P_bc_coef,
+                                                     nullptr,
+                                                     "QUADRATIC");
     d_P_bdry_bc_fill_op = new HierarchyGhostCellInterpolation();
     d_P_bdry_bc_fill_op->initializeOperatorState(P_bc_component, d_hierarchy);
 

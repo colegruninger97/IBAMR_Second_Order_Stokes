@@ -25,33 +25,21 @@ IBAMR_ADD_EXAMPLE(
   LINK_TARGETS
     IBAMR2d
   INPUT_FILES
-    input2d.cylinder input2d.cylinder_stabilized
-    cylinder2d_128.spring cylinder2d_128.vertex
-    cylinder2d_256.spring cylinder2d_256.vertex
-    cylinder2d_512.spring cylinder2d_512.vertex
-    cylinder2d_1024.spring cylinder2d_1024.vertex
+    input2d
     )
 
 IBAMR_ADD_EXAMPLE(
   TARGET_NAME
-    "IB-ex2-3d"
+  "IB-ex2-2d-convergence"
   OUTPUT_DIRECTORY
-    "${CMAKE_BINARY_DIR}/examples/IB/explicit/ex2"
+  "${CMAKE_BINARY_DIR}/examples/IB/explicit/ex2"
   OUTPUT_NAME
-    main3d
+  main2d_convergence
   EXAMPLE_GROUP
-    examples-IB
+  examples-IB
   SOURCES
-    example.cpp
+  convergence_tester.cpp
   LINK_TARGETS
-    IBAMR3d
+  IBAMR2d
   INPUT_FILES
-    input3d.cylinder input3d.cylinder.test
-    input3d.sphere
-    cylinder3d_128.vertex
-    cylinder3d_256.vertex
-    cylinder3d_512.vertex
-    sphere3d_32.spring sphere3d_32.vertex
-    sphere3d_64.spring sphere3d_64.vertex
-    sphere3d_128.spring sphere3d_128.vertex
-    sphere3d_256.spring sphere3d_256.vertex)
+  input2d.convergence)
